@@ -93,6 +93,16 @@ func (u *unmarshaler) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+type unmarshalerWithContext struct {
+	T bool
+	ctx interface{}
+}
+
+func (u *unmarshalerWithContext) UnmarshalJSONWithContext(b []byte, ctx interface{}) error {
+	*u = unmarshalerWithContext{T: true, ctx: ctx} // All we need to see that UnmarshalJSON is called.
+	return nil
+}
+
 type ustruct struct {
 	M unmarshaler
 }
@@ -470,6 +480,7 @@ var unmarshalTests = []unmarshalTest{
 	{in: `[1, 2, 3]`, ptr: new([1]int), out: [1]int{1}},
 	{in: `[1, 2, 3]`, ptr: new([5]int), out: [5]int{1, 2, 3, 0, 0}},
 	{in: `[1, 2, 3]`, ptr: new(MustNotUnmarshalJSON), err: errors.New("MustNotUnmarshalJSON was used")},
+	{in: `[1, 2, 3]`, ptr: new(MustNotUnmarshalJSONWithContext), err: errors.New("MustNotUnmarshalJSONWithContext was used")},
 
 	// empty array to interface test
 	{in: `[]`, ptr: new([]interface{}), out: []interface{}{}},
@@ -1086,6 +1097,30 @@ func equalError(a, b error) bool {
 		return a == nil
 	}
 	return a.Error() == b.Error()
+}
+
+func TestUnmarshalWithContext(t *testing.T) {
+	u := new(unmarshalerWithContext)
+	err := UnmarshalWithContext([]byte(`{"T":false}`), u, "test")
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !u.T {
+		t.Fatalf("UnmarshalJSONWithContext was not called")
+	}
+	if u.ctx != "test" {
+		t.Fatalf("UnmarshalJSONWithContext was called but context was not passed")
+	}
+
+	// check if Marshaler interface still works
+	u2 := new(unmarshaler)
+	err = UnmarshalWithContext([]byte(`{"T":false}`), u2, "test")
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !u2.T {
+		t.Fatalf("UnmarshalJSON was not called")
+	}
 }
 
 func TestUnmarshal(t *testing.T) {
@@ -1914,6 +1949,12 @@ type MustNotUnmarshalJSON struct{}
 
 func (x MustNotUnmarshalJSON) UnmarshalJSON(data []byte) error {
 	return errors.New("MustNotUnmarshalJSON was used")
+}
+
+type MustNotUnmarshalJSONWithContext struct{}
+
+func (x MustNotUnmarshalJSONWithContext) UnmarshalJSONWithContext(data []byte, ctx interface{}) error {
+	return errors.New("MustNotUnmarshalJSONWithContext was used")
 }
 
 type MustNotUnmarshalText struct{}

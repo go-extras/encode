@@ -558,6 +558,18 @@ func (nm *nilJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return Marshal("zenil:" + string(*nm))
 }
 
+// golang.org/issue/16042.
+// Even if a nil interface value is passed in, as long as
+// it implements Marshaler, it should be marshaled.
+type nilJSONContextAwareMarshaler string
+
+func (nm *nilJSONContextAwareMarshaler) MarshalJSONWithContext(ctx interface{}) ([]byte, error) {
+	if nm == nil {
+		return Marshal("0zenil0" + fmt.Sprint(ctx))
+	}
+	return Marshal("zenil:" + string(*nm) + fmt.Sprint(ctx))
+}
+
 // golang.org/issue/34235.
 // Even if a nil interface value is passed in, as long as
 // it implements encoding.TextMarshaler, it should be marshaled.
@@ -585,6 +597,8 @@ func TestNilMarshal(t *testing.T) {
 		{v: struct{ M string }{"gopher"}, want: `{"M":"gopher"}`},
 		{v: struct{ M Marshaler }{}, want: `{"M":null}`},
 		{v: struct{ M Marshaler }{(*nilJSONMarshaler)(nil)}, want: `{"M":"0zenil0"}`},
+		{v: struct{ M ContextAwareMarshaler }{}, want: `{"M":null}`},
+		{v: struct{ M ContextAwareMarshaler }{(*nilJSONContextAwareMarshaler)(nil)}, want: `{"M":"0zenil0\u003cnil\u003e"}`},
 		{v: struct{ M interface{} }{(*nilJSONMarshaler)(nil)}, want: `{"M":null}`},
 		{v: struct{ M encoding.TextMarshaler }{}, want: `{"M":null}`},
 		{v: struct{ M encoding.TextMarshaler }{(*nilTextMarshaler)(nil)}, want: `{"M":"0zenil0"}`},
@@ -1178,5 +1192,62 @@ func TestMarshalerError(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("MarshalerError test %d, got: %s, want: %s", i, got, tt.want)
 		}
+	}
+}
+
+type standardMarshaler struct {
+	T bool
+}
+
+func (u *standardMarshaler) MarshalJSON() (b []byte, err error) {
+	return []byte(`"called without context"`), nil
+}
+
+type marshalerWithContext struct {
+	T bool
+}
+
+func (u *marshalerWithContext) MarshalJSON() (b []byte, err error) {
+	return []byte(`"called without context"`), nil
+}
+
+func (u *marshalerWithContext) MarshalJSONWithContext(ctx interface{}) (b []byte, err error) {
+	return []byte(fmt.Sprintf(`"called with context: %+v"`, ctx)), nil
+}
+
+
+func TestMarshalWithContext(t *testing.T) {
+	// context-aware marshaler & marshaled with MarshalWithContext
+	u := new(marshalerWithContext)
+	v, err := MarshalWithContext(u, "with-context")
+	if err != nil {
+		t.Fatalf("MarshalWithContext: %v", err)
+	}
+	expected := `"called with context: with-context"`
+	if string(v) != expected {
+		t.Errorf("Encoding with context:\n got [%s]\nwant [%s]", string(v), expected)
+	}
+
+	// standard marshaler & marshaled with MarshalWithContext
+	u2 := new(standardMarshaler)
+	v, err = MarshalWithContext(u2, "with-context")
+	if err != nil {
+		t.Fatalf("MarshalWithContext: %v", err)
+	}
+	expected = `"called without context"`
+	if string(v) != expected {
+		t.Errorf("Encoding with context:\n got [%s]\nwant [%s]", string(v), expected)
+	}
+
+
+	// context-aware marshaler & marshaled with Marshal
+	u3 := new(marshalerWithContext)
+	v, err = Marshal(u3)
+	if err != nil {
+		t.Fatalf("MarshalWithContext: %v", err)
+	}
+	expected = `"called with context: \u003cnil\u003e"`
+	if string(v) != expected {
+		t.Errorf("Encoding with context:\n got [%s]\nwant [%s]", string(v), expected)
 	}
 }

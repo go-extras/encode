@@ -156,9 +156,17 @@ import (
 // an error.
 //
 func Marshal(v interface{}) ([]byte, error) {
+	return MarshalWithContext(v, nil)
+}
+
+// MarshalWithContext does absolutely the same thing as Marshal does,
+// apart that it adds an extra arbitrary ctx argument. If your struct
+// implements ContextAwareMarshaler interface, then any value that you
+// pass here will be passed to ContextAwareMarshaler.MarshalJSONWithContext.
+func MarshalWithContext(v interface{}, ctx interface{}) ([]byte, error) {
 	e := newEncodeState()
 
-	err := e.marshal(v, encOpts{escapeHTML: true})
+	err := e.marshal(v, encOpts{escapeHTML: true, ctx: ctx})
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +232,13 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 // can marshal themselves into valid JSON.
 type Marshaler interface {
 	MarshalJSON() ([]byte, error)
+}
+
+// ContextAwareMarshaler is the interface implemented by types that
+// can marshal themselves into valid JSON. In addition, it provides
+// an arbitrary context field that can be passed from MarshalWithContext.
+type ContextAwareMarshaler interface {
+	MarshalJSONWithContext(ctx interface{}) ([]byte, error)
 }
 
 // An UnsupportedTypeError is returned by Marshal when attempting
@@ -365,6 +380,8 @@ type encOpts struct {
 	quoted bool
 	// escapeHTML causes '<', '>', and '&' to be escaped in JSON strings.
 	escapeHTML bool
+	// ctx is a context through which it's possible to make the encoding contextual
+	ctx interface{}
 }
 
 type encoderFunc func(e *encodeState, v reflect.Value, opts encOpts)
@@ -408,8 +425,9 @@ func typeEncoder(t reflect.Type) encoderFunc {
 }
 
 var (
-	marshalerType     = reflect.TypeOf((*Marshaler)(nil)).Elem()
-	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+	marshalerType             = reflect.TypeOf((*Marshaler)(nil)).Elem()
+	contextAwareMarshalerType = reflect.TypeOf((*ContextAwareMarshaler)(nil)).Elem()
+	textMarshalerType         = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
 )
 
 // newTypeEncoder constructs an encoderFunc for a type.
@@ -423,6 +441,12 @@ func newTypeEncoder(t reflect.Type, allowAddr bool) encoderFunc {
 		return newCondAddrEncoder(addrMarshalerEncoder, newTypeEncoder(t, false))
 	}
 	if t.Implements(marshalerType) {
+		return marshalerEncoder
+	}
+	if t.Kind() != reflect.Ptr && allowAddr && reflect.PtrTo(t).Implements(contextAwareMarshalerType) {
+		return newCondAddrEncoder(addrContextAwareMarshalerEncoder, newTypeEncoder(t, false))
+	}
+	if t.Implements(contextAwareMarshalerType) {
 		return marshalerEncoder
 	}
 	if t.Kind() != reflect.Ptr && allowAddr && reflect.PtrTo(t).Implements(textMarshalerType) {
@@ -471,12 +495,26 @@ func marshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 		e.WriteString("null")
 		return
 	}
-	m, ok := v.Interface().(Marshaler)
-	if !ok {
+	m1, isMarshaler := v.Interface().(Marshaler)
+	m2, isContextAwareMarshaler := v.Interface().(ContextAwareMarshaler)
+	if !isMarshaler && !isContextAwareMarshaler {
 		e.WriteString("null")
 		return
 	}
-	b, err := m.MarshalJSON()
+
+	if isContextAwareMarshaler {
+		b, err := m2.MarshalJSONWithContext(opts.ctx)
+		if err == nil {
+			// copy JSON into buffer, checking validity.
+			err = compact(&e.Buffer, b, opts.escapeHTML)
+		}
+		if err != nil {
+			e.error(&MarshalerError{v.Type(), err, "MarshalJSONWithContext"})
+		}
+		return // don't use standard marshaller if we have the context-aware one
+	}
+
+	b, err := m1.MarshalJSON()
 	if err == nil {
 		// copy JSON into buffer, checking validity.
 		err = compact(&e.Buffer, b, opts.escapeHTML)
@@ -494,6 +532,23 @@ func addrMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
 	}
 	m := va.Interface().(Marshaler)
 	b, err := m.MarshalJSON()
+	if err == nil {
+		// copy JSON into buffer, checking validity.
+		err = compact(&e.Buffer, b, opts.escapeHTML)
+	}
+	if err != nil {
+		e.error(&MarshalerError{v.Type(), err, "MarshalJSON"})
+	}
+}
+
+func addrContextAwareMarshalerEncoder(e *encodeState, v reflect.Value, opts encOpts) {
+	va := v.Addr()
+	if va.IsNil() {
+		e.WriteString("null")
+		return
+	}
+	m := va.Interface().(ContextAwareMarshaler)
+	b, err := m.MarshalJSONWithContext(opts.ctx)
 	if err == nil {
 		// copy JSON into buffer, checking validity.
 		err = compact(&e.Buffer, b, opts.escapeHTML)

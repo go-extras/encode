@@ -14,8 +14,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"internal/testenv"
-	"io"
+	io "io/ioutil"
 	"os"
 	"reflect"
 	"runtime"
@@ -329,9 +328,9 @@ func BenchmarkUnmapped(b *testing.B) {
 func BenchmarkTypeFieldsCache(b *testing.B) {
 	b.ReportAllocs()
 	var maxTypes int = 1e6
-	if testenv.Builder() != "" {
-		maxTypes = 1e3 // restrict cache sizes on builders
-	}
+	//if testenv.Builder() != "" {
+	//	maxTypes = 1e3 // restrict cache sizes on builders
+	//}
 
 	// Dynamically generate many new types.
 	types := make([]reflect.Type, maxTypes)
